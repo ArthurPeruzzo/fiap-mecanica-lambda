@@ -1,0 +1,93 @@
+# CD — roda a cada push na main (ou seja, pós-merge de PR). Testa, empacota e publica a Function
+# Lambda na AWS.
+#
+# A rota que expõe esta função (`POST /auth/cliente`) NÃO é criada aqui: ela mora no API Gateway,
+# no repositório da aplicação (`fiap-mecanica/infra/terraform/apigateway`). Numa infra do zero,
+# rode este CD antes do CD da aplicação — a rota só é criada depois que a função existe.
+
+name: CD
+
+on:
+  push:
+    branches: [ "main" ]
+
+concurrency:
+  group: cd-${{ github.ref }}
+  # false de propósito: este workflow muda infraestrutura real. Cancelar no meio pode deixar o
+  # Terraform state (sem lock) num estado parcialmente aplicado. Runs concorrentes ficam na fila.
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: producao
+    permissions:
+      contents: read
+    env:
+      TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Node 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+    - name: Instalar dependências
+      run: npm ci
+    - name: Typecheck
+      run: npm run typecheck
+    - name: Testes
+      run: npm test
+    - name: Empacotar (esbuild → build/function.zip)
+      run: npm run package
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+        aws-region: ${{ env.AWS_REGION }}
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+    - name: Terraform init
+      working-directory: infra/terraform/aws
+      run: terraform init
+
+    # O hostname do ELB da aplicação muda a cada recriação do Service, e quem o mantém em dia é o
+    # job `apigw-apply` do CD da aplicação (via `aws lambda update-function-configuration`).
+    # Sem este passo, o apply abaixo sobrescreveria aquele valor pelo placeholder do vars.tf a
+    # cada deploy da Lambda. Lendo o valor corrente e repassando-o, o Terraform continua dono de
+    # todo o `environment` — sem precisar de `ignore_changes`, que quebraria a rotação do
+    # JWT_SECRET.
+    - name: Preservar o APP_BASE_URL já configurado na função
+      run: |
+        ATUAL=$(aws lambda get-function-configuration \
+          --function-name fiap-mecanica-auth \
+          --query 'Environment.Variables.APP_BASE_URL' --output text 2>/dev/null || true)
+        if [ -n "$ATUAL" ] && [ "$ATUAL" != "None" ]; then
+          echo "Preservando APP_BASE_URL=$ATUAL"
+          echo "TF_VAR_app_base_url=$ATUAL" >> "$GITHUB_ENV"
+        else
+          echo "Função ainda não existe (ou sem APP_BASE_URL) — o placeholder do vars.tf será usado."
+          echo "O CD da aplicação grava o hostname real do ELB no próximo deploy dela."
+        fi
+
+    - name: Terraform apply
+      working-directory: infra/terraform/aws
+      run: terraform apply -auto-approve
+
+    - name: Publicar o resultado no resumo da run
+      working-directory: infra/terraform/aws
+      run: |
+        {
+          echo "### Lambda publicada"
+          echo ""
+          echo "- Função: \`$(terraform output -raw function_name)\`"
+          echo "- APP_BASE_URL: \`$(terraform output -raw app_base_url)\`"
+        } >> "$GITHUB_STEP_SUMMARY"

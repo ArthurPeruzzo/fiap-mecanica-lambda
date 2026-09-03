@@ -1,0 +1,89 @@
+# CI — roda em toda pull request pra main. Valida a função (typecheck, testes, empacotamento)
+# e mostra o que o Terraform mudaria (plan, sem aplicar nada). Não publica nada — isso é o
+# cd.yml, pós-merge.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Node 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+    - name: Instalar dependências
+      run: npm ci
+    - name: Typecheck
+      run: npm run typecheck
+    - name: Testes
+      run: npm test
+    - name: Empacotar (valida que o bundle é gerável)
+      run: npm run package
+    - name: Conferir que o bundle carrega e exporta o handler
+      run: node -e "const{handler}=require('./build/handler.js');if(typeof handler!=='function')process.exit(1)"
+
+  terraform-plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: producao
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: infra/terraform/aws
+    env:
+      TF_VAR_jwt_secret: ${{ secrets.JWT_SECRET }}
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Node 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: npm
+    # O plan precisa do zip: `filebase64sha256(var.package_path)` é avaliado em tempo de plan e
+    # falha se o arquivo não existir.
+    - name: Gerar o pacote
+      working-directory: .
+      run: npm ci && npm run package
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+        aws-region: ${{ env.AWS_REGION }}
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+    - name: Terraform init
+      run: terraform init
+    # Preserva o APP_BASE_URL que o CD da aplicação já gravou na função, para o plan não
+    # aparecer sempre querendo trocá-lo pelo placeholder. Mesma lógica do cd.yml.
+    - name: Preservar o APP_BASE_URL atual da função
+      run: |
+        ATUAL=$(aws lambda get-function-configuration \
+          --function-name "$(terraform output -raw function_name 2>/dev/null || echo fiap-mecanica-auth)" \
+          --query 'Environment.Variables.APP_BASE_URL' --output text 2>/dev/null || true)
+        if [ -n "$ATUAL" ] && [ "$ATUAL" != "None" ]; then
+          echo "TF_VAR_app_base_url=$ATUAL" >> "$GITHUB_ENV"
+        fi
+    - name: Terraform plan
+      run: terraform plan
