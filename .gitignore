@@ -1,8 +1,26 @@
 node_modules/
 dist/
+build/
 coverage/
 *.zip
 .env
 .env.local
 *.log
 .DS_Store
+
+### Terraform ###
+# .terraform/ guarda os binarios dos providers (centenas de MB). O .terraform.lock.hcl, esse SIM
+# deve ser versionado — ele fixa a versao do provider entre a maquina local e o CI.
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
