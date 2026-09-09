@@ -53,6 +53,13 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
         aws-region: ${{ env.AWS_REGION }}
+    # O bucket do backend é criado pelo CD do fiap-mecanica-infra-k8s. Numa infra do zero, se este
+    # CD (que é independente) rodar antes daquele terminar, o `terraform init` falha ("bucket does
+    # not exist"). Este passo idempotente elimina essa corrida.
+    - name: Garantir que o bucket do backend existe (idempotente)
+      run: |
+        aws s3api head-bucket --bucket fiap-mecanica --region ${{ env.AWS_REGION }} 2>/dev/null || \
+        aws s3api create-bucket --bucket fiap-mecanica --region ${{ env.AWS_REGION }}
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
     - name: Terraform init
