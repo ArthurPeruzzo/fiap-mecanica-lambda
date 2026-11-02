@@ -119,7 +119,9 @@ TF_VAR_jwt_secret=<segredo> TF_VAR_app_base_url=http://<elb-host> terraform appl
 
 ### Ordem numa infra do zero
 
-Independente dos outros — mas a rota `POST /auth/cliente` só é criada pelo CD da **aplicação** (`apigw-apply`) se esta função **já existir**. Por isso o deploy recomendado é `infra-k8s` → `infra-db` → **`lambda`** → `fiap-mecanica`: com a Lambda no ar antes do último passo, a rota sai na primeira passada. Se o CD do `fiap-mecanica` rodar antes desta função existir, ele avisa e basta re-executá-lo depois.
+Independente dos outros — mas a rota `POST /auth/cliente` só é criada pelo CD da **aplicação** (`apigw-apply`) se esta função **já existir**. Por isso o deploy recomendado é `infra-k8s` → (`infra-db` ‖ **`lambda`** ‖ `fiap-estoque`, independentes entre si, em paralelo) → `fiap-mecanica`: com a Lambda no ar antes do último passo, a rota sai na primeira passada e o `APP_BASE_URL` da função recebe o endereço real do ELB. Se o CD do `fiap-mecanica` rodar antes desta função existir, ele avisa e a rota só aparece num novo deploy dele — que exige **subir a versão do `pom.xml` e fazer novo merge**, porque o CD do `fiap-mecanica` recusa sobrescrever uma tag de imagem já publicada.
+
+**Execução manual:** este CD também tem o gatilho `workflow_dispatch` (Actions → CD → *Run workflow*). O GitHub não deixa reexecutar um run com mais de 30 dias, e numa conta nova da AWS Academy Lab (que zera toda a infra) o último run costuma estar velho demais.
 
 ## Documentação da API
 
